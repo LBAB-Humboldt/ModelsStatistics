@@ -1,0 +1,145 @@
+---
+title: "README"
+author: "Lina M. Estupinan-Suarez"
+date: "25 de abril de 2017"
+output: html_document
+---
+
+# Cálculo de estadísticas de Biomodelos
+
+## Introducción
+
+Este código calcula estadísticas para los modelos de distribución de especies de Biomodelos. Este documento tiene como ejemplo los modelos de distribución de 20 especies de Zamias en dos versiones. 
+
+* Nivel2: Modelo recortado por por las coberturas donde se encuentra la especie según el criterio de experto
+
+* Concenso: Estos modelos son ajustados por expertos y resultado de la modelatón 
+
+Se desarrollaron 9 funciones que se describen a continuación, y se generan como resultado dos archivos csv. El primero `Zamias_metadata.csv` que son los datos que alimentan la base de datos en Mongo de Biomodelos, y el segundo `Zamias_threats.csv` que tienen información de amenazas en las áreas predecidas por el modelo.
+
+
+Las librerias requeridas para correr este cógido son:
+
+
+```{r eval=FALSE, warning=FALSE}
+library(rgdal)
+library(raster)
+library(dismo)
+library(rgeos)
+```
+
+El arhivo fuente con las funciones que calculan las estadísticas es:
+
+
+```{r eval=FALSE, warning=FALSE}
+source('C:/Biomodelos/Estadisticas/stats_SDM.R')
+```
+
+## Archivos de entrada para el código
+
+
+### Grilla de referencia
+
+Los archivos insumo para el cálculo de estadísticas se generaron apartir de la misma Grilla de referencia, las cual fue la capa ASCII “bio_1.asc” ubicada en `//192.168.11.113/Lab_biogeografia2/Capas/NewExtent`.
+
+* El sistema de coordenadas es GSC_WGS_1984 y el mismo datum (EPSG: 4326).  Las características son:
+* 2760 x 3240 pixeles
+* Tamaño pixel: 0,0083333333, 0,0083333333
+* Extent: Top 13; Left -83; Right -60; Bottom -14 se almacenaron como Rdata, y se encuentran ubicados en la NAS.
+
+### Capas base
+
+Las capas insumos se almacenaron en archivos **Rdata**, se encuentran ubicadas en la NAS, en la carpeta `//192.168.11.113/Lab_biogeografia2/Estadisticas/`y se describen a continuación:
+
+`clc_n3.RData` Capa de Coberturas de la Tierra CORINE (Ideam et al 2010) para el nivel 3:
+
+* Se cuentan con _(54 capas)_ numeradas de statCoverLC2 a statCoverLC55
+* Los valores de los pixeles son de 0 a 100 y representan el porcentaje de la cobertura en el pixel  
+
+
+`forestTifs.RData` _Cinco_ rasters de presencia de bosque generados por el proyecto REDD del IDEAM para los años 1990, 2000, 2005, 2010, 2012, las capas se tomaron de Andromeda (Entrega 2014 Ideam).
+
+* Las capas fueron convertidas a valores de 1 para bosques y 0 para las otras categorías
+* Fueron proyectadas a EPSG=4326
+* Se reagruparon a un factor de 30 pixeles con cálculos de promedio (MEAN)
+* Se remuestrearon (bilinear) a la grilla final del Extent
+
+
+ `Escenarios_2030.RData` Las capas con las predicciones de bosque para el 2030 estaban disponibles en el Laboratorio de Biogeografía. Se tuvieron en cuenta _tres_ escenarios: 
+
+* Conservasionista
+* Histórico
+* Industrializado
+
+
+`protAreaTifs.RData` Para este análisis se descargaron las capas de áreas protegidas disponibles en la página del SIAC en febrero de 2017, y proyectadas posteriormente al sistema de coordenadas establecido previamente. Se generaron _4 capas_:
+
+* pn_cover: Corresponden a las áreas de Parques Nacionales Naturales declaradas a 2016, 59 polígonos.
+* sc_cover: Reservas de la sociedad civil, 355 polígonos.
+* ot_cover: Otras figuras que son; Áreas de recreación, Distrito de conservación de suelos, Distrito regional de manejo integrado, Humedales Ramsar, Parque  Natural Regional, Parques, Reserva Forestal Protectora Regional, Reserva Forestal Protectora Nacional.
+* ap_all_cover: Todas las anteriores, 709 polígonos
+
+`rds&Min.RData` Las capas usadas reposaban en las carpetas del Laboratorio de Biogeografía, fueron proyectadas a EPSG=4326 (cgs_wgs_1984). En total se generaron _tres archivos_, con las siguientes características.
+
+* Los shapefiles de Títulos Mineros y Vías fueron rasterizadas a la grilla de referencia.
+* Los pixeles con vías recibieron un valor de 1
+* El rango de valores de la capa de títulos mineros es de 0 a 100 y equivale al porcentaje del área del título en el pixel 
+*	El raster de Human Foot Print fue remuestreado a la grilla de referencia usando el método _bilinear_. 
+  
+  
+### Información de especies
+  
+Los modelos de distribución de especies objeto de análisis son generados por Biomodelos, el archivo de lectura es un CSV con el nombre de la especie (columna 1) y la ruta del raster del modelo final (columna2). Para el caso de Zamias 
+
+```{r}
+sppPath <- read.csv('//192.168.11.113/Lab_biogeografia2/Modelos/Zamias/finalRasterList.csv', sep=",", header = TRUE, as.is = T)
+```
+
+Adionalmente para el cálculo de una de las estadísticas se requiere las coordenadas en latitud y longitud grados decimales (coordenadas geográficas WGS 1984 EPSG:4326). Se debe especificar la carpeta donde se encuentran los archivos CSV para todas las especies, para el caso de Zamias `//192.168.11.113/Lab_biogeografia2/Modelos/Zamias/21112016_Zamias2/` . El nombre de los archivos debe ser el nombre de la especie, con un guión bajo que separe el genero y la especie. Por ejemplo: *Zamia_amazonum*.
+
+
+## Funciones para el cálculo de estadísticas
+
+Las siguientes funciones se calculan para los modelos (i) Nivel2 y (ii) Consenso de cada una de las especies.
+
+1. `CheckProjection`: Revisa que el sistema de coordenadas del modelo sea idéntico al de los archivos Rdata insumo. En el caso de que el datum este ausente lo asigna y si es diferente lo proyecta.
+
+2. `EstimateRangeSize`: Estima el área de ocurrencia de la especie (km^{2}) según la predicción del modelo y el tamaño de cada uno de los pixeles de la grilla.
+
+3. `PredictMcpRast`: Estima el área (km^{2}) del polígono mínimo convexo teniendo como referencia los centroides de los pixeles donde se predice la ocurrencia según el modelo de distribución.
+
+4. `PredictMcpRec`: Estima el área (km^{2}) del polígono mínimo convexo teniendo como referencia los centroides de los pixeles donde se predice la ocurrencia según los registros de presencia de las especies.
+
+5. `Habitat CLC`: Calcula el porcentaje de distribución de la especie para las coberturas nivel 3 de Corine Land Cover (Ideam _et al._, 2010)
+
+6. `Historico perdida de bosque`: Calcula el porcentaje de ocurrencia de la especie en bosque para 5 años diferentes (1990, 2000, 2005, 2010, 2012).
+
+7. `Escenarios 2030`:  Calcula el porcentaje de ocurrencia de la especie en bosque en trese escenarios para el 2030; histórico, conservacionista e industrializado.
+
+8. `AllProtectedFigures`: Cálcula el porcentaje de ocurrencia en las áreas protegidas descritas anteriormente.
+
+9. `HumanFootPrint`: La función hace la intersección entre la ocurrencia de la especie y el mapa de HFP, se conservan los valores de esta segunda capa.
+
+10. `RodasLength`: Cálcula el número de pixeles que tienen alguna carretera  dentro del modelo de distribución.
+
+11. `TitulosMineros`: Cálcula el área (km^{2}) de ocurrencia de la especie que queda dentro de áreas con Títulos Mineros
+
+
+## Resultados
+
+
+Los cálulos de las estadísticas se almacenan en dos archivos __CSV__.
+
+* El primero contiene los valores de los metadatos que corresponde a las estadísticas de los modelos que entran a las base de datos de Mongo (Funciones 1 a 6), para esto es esencial que los nombres de los campos de las bases de datos correspondan a los nombres de las columnas.
+* El segundo archivo tiene los valores relacionados a Amenazas, Funciones 7, 8 y 9. Los productos generados para el caso de Zamias son:
+
+
+```{r eval=FALSE, warning=FALSE}
+write.csv(metadata.all, 'C:/Biomodelos/Grilla/Registros/Zamias_metadata.csv', row.names = T)
+write.csv(threats.all, 'C:/Biomodelos/Grilla/Registros/Zamias_threats.csv', row.names = T)
+```
+
+
+
+
+
